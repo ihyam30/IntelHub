@@ -1,0 +1,9 @@
+.git
+.idea
+.vscode
+.maven-cache
+.npm-cache
+**/node_modules
+**/dist
+**/target
+**/.env

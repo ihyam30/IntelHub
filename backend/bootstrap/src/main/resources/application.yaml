@@ -1,0 +1,92 @@
+server:
+  port: ${SERVER_PORT:9090}
+  servlet:
+    context-path: /api
+
+spring:
+  application:
+    name: intelhub
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/intelhub}
+    username: ${DATABASE_USER:intelhub}
+    password: ${DATABASE_PASSWORD:intelhub}
+    hikari:
+      maximum-pool-size: 12
+      minimum-idle: 2
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  jackson:
+    default-property-inclusion: non_null
+
+sa-token:
+  token-name: satoken
+  timeout: 2592000
+  active-timeout: -1
+  is-concurrent: true
+  is-share: false
+  token-style: uuid
+  is-log: false
+
+rocketmq:
+  name-server: ${ROCKETMQ_NAME_SERVER:localhost:9876}
+  producer:
+    group: intelhub-producer
+    send-message-timeout: ${ROCKETMQ_SEND_MESSAGE_TIMEOUT:10000}
+
+intelhub:
+  files:
+    bucket: ${S3_BUCKET:intelhub-documents}
+    endpoint: ${S3_ENDPOINT:http://localhost:9000}
+    region: ${S3_REGION:us-east-1}
+    access-key: ${S3_ACCESS_KEY:minioadmin}
+    secret-key: ${S3_SECRET_KEY:minioadmin}
+  elasticsearch:
+    endpoint: ${ELASTICSEARCH_URL:http://localhost:9200}
+    index: intelhub_chunks
+  ingestion:
+    topic: intelhub-document-ingestion
+  mcp:
+    url: ${MCP_SERVER_URL:http://localhost:9099/mcp}
+  limiter:
+    max-concurrent: ${CHAT_MAX_CONCURRENT:4}
+    max-wait-seconds: ${CHAT_MAX_WAIT_SECONDS:30}
+    lease-seconds: ${CHAT_PERMIT_LEASE_SECONDS:600}
+  rag:
+    minimum-vector-similarity: ${RAG_MIN_VECTOR_SIMILARITY:0.25}
+    minimum-lexical-overlap: ${RAG_MIN_LEXICAL_OVERLAP:0.1}
+  ai:
+    chat:
+      circuit:
+        failure-threshold: ${CHAT_MODEL_FAILURE_THRESHOLD:3}
+        cooldown-millis: ${CHAT_MODEL_CIRCUIT_COOLDOWN_MILLIS:30000}
+    embedding:
+      dimension: ${EMBEDDING_DIMENSION:384}
+      base-url: ${AI_EMBEDDING_BASE_URL:}
+      api-key: ${AI_EMBEDDING_API_KEY:}
+      model: ${AI_EMBEDDING_MODEL:}
+    primary:
+      base-url: ${AI_PRIMARY_BASE_URL:}
+      api-key: ${AI_PRIMARY_API_KEY:}
+      model: ${AI_PRIMARY_MODEL:}
+    fallback:
+      base-url: ${AI_FALLBACK_BASE_URL:}
+      api-key: ${AI_FALLBACK_API_KEY:}
+      model: ${AI_FALLBACK_MODEL:}
+    rerank:
+      base-url: ${AI_RERANK_BASE_URL:}
+      api-key: ${AI_RERANK_API_KEY:}
+      model: ${AI_RERANK_MODEL:}
+
+logging:
+  level:
+    com.intelhub: INFO

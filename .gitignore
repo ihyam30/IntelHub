@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+.maven-cache/
+.maven-repository/
+.maven-wrapper-home/
+.npm-cache/
+**/target/
+node_modules/
+frontend/dist/
+coverage/
+*.tsbuildinfo
+.idea/
+.vscode/

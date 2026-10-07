@@ -1,0 +1,5 @@
+server:
+  port: ${MCP_SERVER_PORT:9099}
+spring:
+  application:
+    name: intelhub-mcp-server
