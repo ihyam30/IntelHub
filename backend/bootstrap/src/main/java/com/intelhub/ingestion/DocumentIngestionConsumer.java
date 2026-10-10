@@ -53,9 +53,9 @@ public class DocumentIngestionConsumer implements RocketMQListener<String> {
             if ("COMPLETED".equals(document.status())) return;
             jdbc.update("UPDATE document_record SET status='PROCESSING',error_message=NULL,updated_at=now() WHERE id=?", documentId);
             jdbc.update("INSERT INTO ingestion_run(id,document_id,pipeline_id,status,current_node) VALUES (?,?,?,'PROCESSING',NULL)", runId, documentId, document.pipelineId());
-            List<String> steps = loadPipeline(document);
+            List<IngestionPipelineController.NodeStep> steps = loadPipeline(document);
             IngestionContext context = new IngestionContext(runId, documentId, document.knowledgeBaseId(), document.ownerId(), document.filename(), document.objectKey());
-            for (String type : steps) executeNode(context, type);
+            for (IngestionPipelineController.NodeStep step : steps) executeNode(context, step);
             jdbc.update("UPDATE document_record SET status='COMPLETED',chunk_count=?,updated_at=now() WHERE id=?", context.chunks().size(), documentId);
             jdbc.update("UPDATE ingestion_run SET status='COMPLETED',current_node=NULL,finished_at=now() WHERE id=?", runId);
         } catch (Exception exception) {
@@ -69,17 +69,17 @@ public class DocumentIngestionConsumer implements RocketMQListener<String> {
         }
     }
 
-    private List<String> loadPipeline(DocumentRow document) throws Exception {
+    private List<IngestionPipelineController.NodeStep> loadPipeline(DocumentRow document) throws Exception {
         UUID pipelineId = document.pipelineId();
         if (pipelineId == null) {
             pipelineId = jdbc.queryForObject("SELECT id FROM ingestion_pipeline WHERE is_default=TRUE ORDER BY created_at LIMIT 1", UUID.class);
         }
         String json = jdbc.queryForObject("SELECT nodes FROM ingestion_pipeline WHERE id=? AND (owner_id=? OR owner_id IS NULL)", String.class, pipelineId, document.ownerId());
-        List<Map<String, String>> stepMaps = mapper.readValue(json, new TypeReference<>() {});
-        return stepMaps.stream().map(step -> step.get("type")).toList();
+        return mapper.readValue(json, new TypeReference<List<IngestionPipelineController.NodeStep>>() {});
     }
 
-    private void executeNode(IngestionContext context, String type) throws Exception {
+    private void executeNode(IngestionContext context, IngestionPipelineController.NodeStep step) throws Exception {
+        String type = step.type();
         IngestionNode node = nodes.get(type);
         if (node == null) throw new IllegalArgumentException("未知入库节点: " + type);
         long start = System.currentTimeMillis();
@@ -87,7 +87,7 @@ public class DocumentIngestionConsumer implements RocketMQListener<String> {
         jdbc.update("UPDATE ingestion_run SET current_node=? WHERE id=?", type, context.runId());
         jdbc.update("INSERT INTO ingestion_node_run(id,ingestion_run_id,node_type,status) VALUES (?,?,?,'PROCESSING')", nodeRun, context.runId(), type);
         try {
-            node.execute(context);
+            node.execute(context, step.settings());
             jdbc.update("UPDATE ingestion_node_run SET status='COMPLETED',duration_ms=?,finished_at=now() WHERE id=?", System.currentTimeMillis() - start, nodeRun);
         } catch (Exception exception) {
             jdbc.update("UPDATE ingestion_node_run SET status='FAILED',duration_ms=?,error_message=?,finished_at=now() WHERE id=?", System.currentTimeMillis() - start, truncate(exception.getMessage()), nodeRun);

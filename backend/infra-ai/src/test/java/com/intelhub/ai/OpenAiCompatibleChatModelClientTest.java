@@ -51,6 +51,21 @@ class OpenAiCompatibleChatModelClientTest {
         assertThat(tokens).containsExactly("partial");
     }
 
+    @Test
+    void redactsCredentialsAndBoundsProviderErrorBody() throws Exception {
+        String providerError = "upstream echoed local-chat-key and Bearer another-secret " + "x".repeat(5000);
+        startServer(401, providerError, new AtomicReference<>(), new AtomicReference<>(), new AtomicReference<>());
+
+        assertThatThrownBy(() -> client().stream("system", "question", ignored -> {}))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("HTTP 401")
+                .hasMessageContaining("[REDACTED]")
+                .hasMessageContaining("…")
+                .hasMessageNotContaining("local-chat-key")
+                .hasMessageNotContaining("another-secret")
+                .hasMessageNotContaining("x".repeat(5000));
+    }
+
     private void startServer(int status, String body, AtomicReference<String> requestPath,
                              AtomicReference<String> requestBody, AtomicReference<String> authorization) throws Exception {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);

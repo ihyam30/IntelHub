@@ -58,20 +58,30 @@ public class IngestionPipelineController {
         UUID owner = currentUser.id();
         validateNodes(request.nodes());
         UUID id = UUID.randomUUID();
-        jdbc.update("INSERT INTO ingestion_pipeline(id,owner_id,name,nodes) VALUES (?,?,?,?::jsonb)", id, owner, request.name().trim(), mapper.writeValueAsString(request.nodes()));
-        return ApiResult.ok(new PipelineView(id.toString(), owner.toString(), request.name().trim(), request.nodes(), false, OffsetDateTime.now(), OffsetDateTime.now()));
+        List<NodeStep> nodes = applyChunkerDefaults(request.nodes());
+        jdbc.update("INSERT INTO ingestion_pipeline(id,owner_id,name,nodes) VALUES (?,?,?,?::jsonb)", id, owner, request.name().trim(), mapper.writeValueAsString(nodes));
+        return ApiResult.ok(new PipelineView(id.toString(), owner.toString(), request.name().trim(), nodes, false, OffsetDateTime.now(), OffsetDateTime.now()));
     }
 
     @PutMapping("/{id}")
     ApiResult<PipelineView> update(@PathVariable UUID id, @Valid @RequestBody PipelineRequest request) throws Exception {
         UUID owner = currentUser.id();
         validateNodes(request.nodes());
-        int updated = jdbc.update("UPDATE ingestion_pipeline SET name=?,nodes=?::jsonb,updated_at=now() WHERE id=? AND owner_id=? AND is_default=FALSE",
-                request.name().trim(), mapper.writeValueAsString(request.nodes()), id, owner);
-        if (updated == 0) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "流程不存在或不可编辑");
-        return ApiResult.ok(jdbc.queryForObject("SELECT id,owner_id,name,nodes,is_default,created_at,updated_at FROM ingestion_pipeline WHERE id=?",
-                (rs, n) -> new PipelineView(rs.getObject("id", UUID.class).toString(), rs.getObject("owner_id", UUID.class).toString(), rs.getString("name"),
-                        parseNodes(rs.getString("nodes")), rs.getBoolean("is_default"), rs.getObject("created_at", OffsetDateTime.class), rs.getObject("updated_at", OffsetDateTime.class)), id));
+        PipelineView existing = findPipeline(id);
+        List<NodeStep> nodes = applyChunkerDefaults(request.nodes());
+        if (existing.isDefault()) {
+            currentUser.requireAdmin();
+            if (!existing.name().equals(request.name().trim()) || !nodeTypes(existing.nodes()).equals(nodeTypes(nodes))) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "默认流程仅允许调整切分参数");
+            }
+            jdbc.update("UPDATE ingestion_pipeline SET nodes=?::jsonb,updated_at=now() WHERE id=? AND is_default=TRUE",
+                    mapper.writeValueAsString(nodes), id);
+        } else {
+            int updated = jdbc.update("UPDATE ingestion_pipeline SET name=?,nodes=?::jsonb,updated_at=now() WHERE id=? AND owner_id=? AND is_default=FALSE",
+                    request.name().trim(), mapper.writeValueAsString(nodes), id, owner);
+            if (updated == 0) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "流程不存在或不可编辑");
+        }
+        return ApiResult.ok(findPipeline(id));
     }
 
     @DeleteMapping("/{id}")
@@ -95,15 +105,55 @@ public class IngestionPipelineController {
         if (invalid) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "流程须以 parse 开始、以 index 结束，并按顺序包含 chunk 和 embedding；normalize 和 metadata 可选");
         }
+        for (NodeStep node : nodes) {
+            if (node.settings() != null && !"chunk".equals(node.type())) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "只有文本切分节点可以配置 settings");
+            }
+            if ("chunk".equals(node.type())) {
+                ChunkerSettings settings = node.settings() == null ? ChunkerSettings.defaults() : node.settings().withDefaults();
+                if (settings.chunkSize() < 1 || settings.chunkSize() > ChunkerSettings.MAX_CHUNK_SIZE) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                            "切分长度必须在 1 到 " + ChunkerSettings.MAX_CHUNK_SIZE + " 个字符之间");
+                }
+                if (settings.overlapSize() < 0
+                        || settings.overlapSize() > ChunkerSettings.maxOverlapSize(settings.chunkSize())) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                            "重叠长度不能超过切分长度的 50%（当前最多 "
+                                    + ChunkerSettings.maxOverlapSize(settings.chunkSize()) + " 个字符）");
+                }
+            }
+        }
+    }
+
+    private List<NodeStep> applyChunkerDefaults(List<NodeStep> nodes) {
+        return nodes.stream().map(node -> "chunk".equals(node.type())
+                ? new NodeStep(node.type(), node.settings() == null ? ChunkerSettings.defaults() : node.settings().withDefaults())
+                : node).toList();
     }
 
     private List<NodeStep> parseNodes(String json) {
-        try { return mapper.readValue(json, new TypeReference<>() {}); }
-        catch (Exception ignored) { return List.of(new NodeStep("parse"), new NodeStep("normalize"), new NodeStep("chunk"), new NodeStep("metadata"), new NodeStep("embedding"), new NodeStep("index")); }
+        try { return applyChunkerDefaults(mapper.readValue(json, new TypeReference<List<NodeStep>>() {})); }
+        catch (Exception ignored) { return List.of(new NodeStep("parse"), new NodeStep("normalize"), new NodeStep("chunk", ChunkerSettings.defaults()), new NodeStep("metadata"), new NodeStep("embedding"), new NodeStep("index")); }
+    }
+
+    private PipelineView findPipeline(UUID id) {
+        List<PipelineView> rows = jdbc.query("SELECT id,owner_id,name,nodes,is_default,created_at,updated_at FROM ingestion_pipeline WHERE id=?",
+                (rs, n) -> new PipelineView(rs.getObject("id", UUID.class).toString(),
+                        rs.getObject("owner_id") == null ? null : rs.getObject("owner_id", UUID.class).toString(),
+                        rs.getString("name"), parseNodes(rs.getString("nodes")), rs.getBoolean("is_default"),
+                        rs.getObject("created_at", OffsetDateTime.class), rs.getObject("updated_at", OffsetDateTime.class)), id);
+        if (rows.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "流程不存在或不可编辑");
+        return rows.get(0);
+    }
+
+    private List<String> nodeTypes(List<NodeStep> nodes) {
+        return nodes.stream().map(NodeStep::type).toList();
     }
 
     public record PipelineRequest(@NotBlank @Size(max = 160) String name, @NotEmpty List<NodeStep> nodes) {}
-    public record NodeStep(@NotBlank String type) {}
+    public record NodeStep(@NotBlank String type, ChunkerSettings settings) {
+        public NodeStep(String type) { this(type, null); }
+    }
     public record NodeType(String type, String name, String description) {}
     public record PipelineView(String id, String ownerId, String name, List<NodeStep> nodes, boolean isDefault, OffsetDateTime createdAt, OffsetDateTime updatedAt) {}
 }

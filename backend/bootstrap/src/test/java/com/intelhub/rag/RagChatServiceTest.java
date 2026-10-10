@@ -32,6 +32,7 @@ import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -74,13 +75,23 @@ class RagChatServiceTest {
             fixture.stream();
 
             ArgumentCaptor<String> prompt = ArgumentCaptor.forClass(String.class);
-            verify(fixture.modelRouter).stream(anyString(), prompt.capture(), any());
+            verify(fixture.modelRouter).stream(anyString(), prompt.capture(), any(), any());
             assertThat(prompt.getValue()).contains("keyword-only evidence");
             JsonNode trace = fixture.traceRetrieval();
             assertThat(trace.path("vectorAvailable").asBoolean()).isFalse();
             assertThat(trace.path("keywordAvailable").asBoolean()).isTrue();
             assertThat(trace.path("vectorError").asText()).isEqualTo("IllegalStateException");
             assertThat(trace.path("keywordHits").asInt()).isEqualTo(1);
+            JsonNode stages = trace.path("stages");
+            assertThat(stages.findValuesAsText("name")).contains("context_rewrite", "query_rewrite", "intent_classification",
+                    "vector_retrieval", "keyword_retrieval", "rrf_fusion", "rerank", "model_routing");
+            JsonNode vectorStage = findStage(stages, "vector_retrieval");
+            assertThat(vectorStage.path("status").asText()).isEqualTo("FAILED");
+            assertThat(vectorStage.path("error").asText()).contains("IllegalStateException: database offline");
+            assertThat(findStage(stages, "query_rewrite").path("status").asText()).isEqualTo("FALLBACK");
+            assertThat(findStage(stages, "rerank").path("status").asText()).isEqualTo("SKIPPED");
+            JsonNode modelStage = findStage(stages, "model_routing");
+            assertThat(modelStage.path("details").path("attempts").get(0).path("providerId").asText()).isEqualTo("test-model");
         }
     }
 
@@ -95,7 +106,7 @@ class RagChatServiceTest {
             fixture.stream();
 
             ArgumentCaptor<String> prompt = ArgumentCaptor.forClass(String.class);
-            verify(fixture.modelRouter).stream(anyString(), prompt.capture(), any());
+            verify(fixture.modelRouter).stream(anyString(), prompt.capture(), any(), any());
             assertThat(prompt.getValue()).contains("vector-only evidence");
             JsonNode trace = fixture.traceRetrieval();
             assertThat(trace.path("vectorAvailable").asBoolean()).isTrue();
@@ -114,7 +125,7 @@ class RagChatServiceTest {
 
             fixture.stream();
 
-            verifyNoInteractions(fixture.modelRouter);
+            verify(fixture.modelRouter, never()).stream(anyString(), anyString(), any(), any());
             verify(fixture.lease).close();
             ArgumentCaptor<Object[]> traceArguments = ArgumentCaptor.forClass(Object[].class);
             verify(fixture.jdbc).update(contains("INSERT INTO rag_trace"), traceArguments.capture());
@@ -131,7 +142,7 @@ class RagChatServiceTest {
 
             fixture.stream();
 
-            verifyNoInteractions(fixture.modelRouter);
+            verify(fixture.modelRouter, never()).stream(anyString(), anyString(), any(), any());
             List<Object[]> messages = fixture.assistantMessages();
             assertThat(messages).hasSize(1);
             assertThat(messages.get(0)[2].toString()).contains("没有在这个知识库中找到足够的资料");
@@ -154,7 +165,7 @@ class RagChatServiceTest {
             fixture.stream("工单目前是什么情况？");
 
             ArgumentCaptor<String> prompt = ArgumentCaptor.forClass(String.class);
-            verify(fixture.modelRouter).stream(anyString(), prompt.capture(), any());
+            verify(fixture.modelRouter).stream(anyString(), prompt.capture(), any(), any());
             assertThat(prompt.getValue()).contains("业务工具结果（模拟演示数据）")
                     .contains("待处理 12 单");
             assertThat(fixture.traceRetrieval().path("mcpToolUsed").asBoolean()).isTrue();
@@ -176,7 +187,7 @@ class RagChatServiceTest {
                 cancelled.set(true);
                 onToken.accept("token after disconnect");
                 return "test-model";
-            }).when(fixture.modelRouter).stream(anyString(), anyString(), any());
+            }).when(fixture.modelRouter).stream(anyString(), anyString(), any(), any());
 
             fixture.service.stream(USER_ID, false,
                     new RagChatController.ChatRequest(KB_ID, null, "disconnect test question"),
@@ -201,7 +212,8 @@ class RagChatServiceTest {
 
             fixture.stream();
 
-            verifyNoInteractions(fixture.vector, fixture.keyword, fixture.modelRouter, fixture.mcp);
+            verifyNoInteractions(fixture.vector, fixture.keyword, fixture.mcp);
+            verify(fixture.modelRouter, never()).stream(anyString(), anyString(), any(), any());
             verify(fixture.jdbc).update(contains("pending_question=?"), any(Object[].class));
             ArgumentCaptor<Object[]> trace = ArgumentCaptor.forClass(Object[].class);
             verify(fixture.jdbc).update(contains("INSERT INTO rag_trace"), trace.capture());
@@ -243,7 +255,7 @@ class RagChatServiceTest {
 
             verify(fixture.vector).search(eq(KB_ID), contains("员工有哪些请假规定"), eq(30));
             verify(fixture.vector).search(eq(KB_ID), contains("用户澄清方向：人事制度"), eq(30));
-            verify(fixture.modelRouter).stream(contains("人事制度"), anyString(), any());
+            verify(fixture.modelRouter).stream(contains("人事制度"), anyString(), any(), any());
             verify(fixture.jdbc).update(contains("pending_question=NULL"), eq(conversationId), eq(USER_ID));
         }
     }
@@ -257,7 +269,7 @@ class RagChatServiceTest {
 
             fixture.stream();
 
-            verifyNoInteractions(fixture.modelRouter);
+            verify(fixture.modelRouter, never()).stream(anyString(), anyString(), any(), any());
             assertThat(fixture.assistantMessages().get(0)[2].toString())
                     .contains("没有在这个知识库中找到足够的资料");
             assertThat(fixture.traceRetrieval().path("citations").asInt()).isZero();
@@ -274,6 +286,161 @@ class RagChatServiceTest {
             assertThat(citations).extracting(RagChatService.Citation::chunkId)
                     .containsExactly("shared", "keyword-only", "vector-only");
             assertThat(citations).filteredOn(citation -> citation.chunkId().equals("shared")).hasSize(1);
+        }
+    }
+
+    @Test
+    void decomposesCompoundQuestionAndRetrievesEachSubQuestionSeparately() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            String firstQuestion = "员工请假怎么申请？";
+            String secondQuestion = "财务报销需要什么材料？";
+            when(fixture.intents.classifyBest(firstQuestion)).thenReturn(new IntentClassifier.Classification(
+                    "intent-hr", "人事制度", "员工制度", "说明适用范围", 0.9, List.of("请假")));
+            when(fixture.intents.classifyBest(secondQuestion)).thenReturn(new IntentClassifier.Classification(
+                    "intent-finance", "财务流程", "报销流程", "说明材料和审批", 0.9, List.of("报销")));
+            when(fixture.vector.search(eq(KB_ID), contains("员工请假"), eq(30)))
+                    .thenReturn(List.of(vectorHit("leave", "员工请假按流程提交申请", 0.92)));
+            when(fixture.vector.search(eq(KB_ID), contains("财务报销"), eq(30)))
+                    .thenReturn(List.of(vectorHit("expense", "财务报销需要发票和审批单", 0.91)));
+            when(fixture.keyword.search(eq(KB_ID), eq(USER_ID), contains("员工请假"), eq(false), eq(30)))
+                    .thenReturn(List.of(keywordHit("leave", "员工请假按流程提交申请")));
+            when(fixture.keyword.search(eq(KB_ID), eq(USER_ID), contains("财务报销"), eq(false), eq(30)))
+                    .thenReturn(List.of(keywordHit("expense", "财务报销需要发票和审批单")));
+
+            fixture.stream(firstQuestion + secondQuestion);
+
+            verify(fixture.vector).search(eq(KB_ID), contains("员工请假"), eq(30));
+            verify(fixture.vector).search(eq(KB_ID), contains("财务报销"), eq(30));
+            verify(fixture.keyword).search(eq(KB_ID), eq(USER_ID), contains("员工请假"), eq(false), eq(30));
+            verify(fixture.keyword).search(eq(KB_ID), eq(USER_ID), contains("财务报销"), eq(false), eq(30));
+            ArgumentCaptor<String> prompt = ArgumentCaptor.forClass(String.class);
+            verify(fixture.modelRouter).stream(anyString(), prompt.capture(), any(), any());
+            assertThat(prompt.getValue()).contains("按编号逐项作答", firstQuestion, secondQuestion,
+                    "员工请假按流程提交申请", "财务报销需要发票和审批单");
+            JsonNode trace = fixture.traceRetrieval();
+            List<String> tracedQuestions = new ArrayList<>();
+            trace.path("subQuestions").forEach(node -> tracedQuestions.add(node.asText()));
+            assertThat(tracedQuestions).containsExactly(firstQuestion, secondQuestion);
+            assertThat(trace.path("intentRoutes")).hasSize(2);
+            assertThat(trace.path("intentId").asText()).contains("intent-hr", "intent-finance");
+        }
+    }
+
+    @Test
+    void directsIntentSearchToMappedKnowledgeBaseAndRecordsTheTarget() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            UUID mappedKnowledgeBaseId = UUID.randomUUID();
+            IntentClassifier.Classification intent = new IntentClassifier.Classification(
+                    "intent-hr", "人事制度", "员工制度", "说明适用范围", 0.9, List.of("请假"), List.of(mappedKnowledgeBaseId));
+            when(fixture.intents.analyze(anyString())).thenReturn(new IntentClassifier.Decision(intent, List.of(), false));
+            doAnswer(invocation -> {
+                String sql = invocation.getArgument(0);
+                assertThat(sql).contains("AND owner_id=?");
+                return List.of(mappedKnowledgeBaseId);
+            }).when(fixture.jdbc).query(contains("SELECT id FROM knowledge_base WHERE id IN"), any(RowMapper.class), any(Object[].class));
+            when(fixture.vector.search(eq(mappedKnowledgeBaseId), anyString(), eq(30)))
+                    .thenReturn(List.of(vectorHit("directed", "人事知识库中的请假制度", 0.95)));
+            when(fixture.keyword.search(eq(mappedKnowledgeBaseId), eq(USER_ID), anyString(), eq(false), eq(30)))
+                    .thenReturn(List.of());
+
+            fixture.stream("员工请假怎么申请？");
+
+            verify(fixture.vector).search(eq(mappedKnowledgeBaseId), anyString(), eq(30));
+            verify(fixture.keyword).search(eq(mappedKnowledgeBaseId), eq(USER_ID), anyString(), eq(false), eq(30));
+            verify(fixture.vector, never()).search(eq(KB_ID), anyString(), eq(30));
+            assertThat(fixture.traceRetrieval().path("intentRoutes").get(0).path("knowledgeBaseIds").get(0).asText())
+                    .isEqualTo(mappedKnowledgeBaseId.toString());
+            assertThat(fixture.assistantMessages().get(0)[3].toString()).contains(mappedKnowledgeBaseId.toString());
+        }
+    }
+
+    @Test
+    void splitsCompoundQuestionAndDirectsEachIntentToItsOwnKnowledgeBase() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            UUID hrKnowledgeBaseId = UUID.randomUUID();
+            UUID financeKnowledgeBaseId = UUID.randomUUID();
+            String hrQuestion = "员工请假怎么申请？";
+            String financeQuestion = "财务报销需要什么材料？";
+            when(fixture.intents.classifyBest(hrQuestion)).thenReturn(new IntentClassifier.Classification(
+                    "intent-hr", "人事制度", "员工制度", "说明适用范围", 0.9, List.of("请假"), List.of(hrKnowledgeBaseId)));
+            when(fixture.intents.classifyBest(financeQuestion)).thenReturn(new IntentClassifier.Classification(
+                    "intent-finance", "财务流程", "报销流程", "说明所需材料", 0.9, List.of("报销"), List.of(financeKnowledgeBaseId)));
+            doAnswer(invocation -> {
+                UUID requestedId = invocation.getArgument(2);
+                assertThat((String) invocation.getArgument(0)).contains("AND owner_id=?");
+                return requestedId.equals(hrKnowledgeBaseId) || requestedId.equals(financeKnowledgeBaseId)
+                        ? List.of(requestedId) : List.of();
+            }).when(fixture.jdbc).query(contains("SELECT id FROM knowledge_base WHERE id IN"), any(RowMapper.class), any(Object[].class));
+            when(fixture.vector.search(eq(hrKnowledgeBaseId), anyString(), eq(30)))
+                    .thenReturn(List.of(vectorHit("hr-result", "员工请假应提交审批申请", 0.95)));
+            when(fixture.vector.search(eq(financeKnowledgeBaseId), anyString(), eq(30)))
+                    .thenReturn(List.of(vectorHit("finance-result", "报销需要发票和审批单", 0.95)));
+            when(fixture.keyword.search(eq(hrKnowledgeBaseId), eq(USER_ID), anyString(), eq(false), eq(30))).thenReturn(List.of());
+            when(fixture.keyword.search(eq(financeKnowledgeBaseId), eq(USER_ID), anyString(), eq(false), eq(30))).thenReturn(List.of());
+
+            fixture.stream(hrQuestion + financeQuestion);
+
+            ArgumentCaptor<Object[]> traceArguments = ArgumentCaptor.forClass(Object[].class);
+            verify(fixture.jdbc).update(contains("INSERT INTO rag_trace"), traceArguments.capture());
+            assertThat(traceArguments.getValue()[8]).as("RAG routing error").isNull();
+            verify(fixture.vector).search(eq(hrKnowledgeBaseId), contains("员工请假"), eq(30));
+            verify(fixture.vector).search(eq(financeKnowledgeBaseId), contains("财务报销"), eq(30));
+            verify(fixture.vector, never()).search(eq(KB_ID), anyString(), eq(30));
+            JsonNode routes = fixture.traceRetrieval().path("intentRoutes");
+            assertThat(routes).hasSize(2);
+            assertThat(routes.get(0).path("knowledgeBaseIds").get(0).asText()).isEqualTo(hrKnowledgeBaseId.toString());
+            assertThat(routes.get(1).path("knowledgeBaseIds").get(0).asText()).isEqualTo(financeKnowledgeBaseId.toString());
+            assertThat(fixture.assistantMessages().get(0)[3].toString())
+                    .contains(hrKnowledgeBaseId.toString(), financeKnowledgeBaseId.toString());
+        }
+    }
+
+    @Test
+    void ambiguousSubQuestionUsesGenericSelectedKnowledgeBaseRetrieval() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            String firstQuestion = "系统怎么处理？";
+            String secondQuestion = "制度应该如何执行？";
+            when(fixture.intents.classifyBest(firstQuestion)).thenReturn(null);
+            when(fixture.intents.classifyBest(secondQuestion)).thenReturn(null);
+            when(fixture.vector.search(eq(KB_ID), contains("系统怎么处理"), eq(30))).thenReturn(List.of());
+            when(fixture.vector.search(eq(KB_ID), contains("制度应该如何执行"), eq(30))).thenReturn(List.of());
+            when(fixture.keyword.search(eq(KB_ID), eq(USER_ID), contains("系统怎么处理"), eq(false), eq(30))).thenReturn(List.of());
+            when(fixture.keyword.search(eq(KB_ID), eq(USER_ID), contains("制度应该如何执行"), eq(false), eq(30))).thenReturn(List.of());
+
+            fixture.stream(firstQuestion + secondQuestion);
+
+            verify(fixture.vector).search(eq(KB_ID), contains("系统怎么处理"), eq(30));
+            verify(fixture.vector).search(eq(KB_ID), contains("制度应该如何执行"), eq(30));
+            verify(fixture.vector, times(2)).search(eq(KB_ID), anyString(), eq(30));
+            JsonNode routes = fixture.traceRetrieval().path("intentRoutes");
+            assertThat(routes).hasSize(2);
+            for (JsonNode route : routes) {
+                assertThat(route.path("intentId").asText()).isEmpty();
+                assertThat(route.path("knowledgeBaseIds").get(0).asText()).isEqualTo(KB_ID.toString());
+            }
+        }
+    }
+
+    @Test
+    void inaccessibleIntentMappingFallsBackToTheAuthorizedSelectedKnowledgeBase() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            UUID inaccessibleKnowledgeBaseId = UUID.randomUUID();
+            IntentClassifier.Classification intent = new IntentClassifier.Classification(
+                    "intent-hr", "人事制度", "员工制度", "说明适用范围", 0.9, List.of("请假"), List.of(inaccessibleKnowledgeBaseId));
+            when(fixture.intents.analyze(anyString())).thenReturn(new IntentClassifier.Decision(intent, List.of(), false));
+            doAnswer(invocation -> {
+                assertThat((String) invocation.getArgument(0)).contains("AND owner_id=?");
+                return List.of();
+            }).when(fixture.jdbc).query(contains("SELECT id FROM knowledge_base WHERE id IN"), any(RowMapper.class), any(Object[].class));
+            when(fixture.vector.search(eq(KB_ID), anyString(), eq(30))).thenReturn(List.of());
+            when(fixture.keyword.search(eq(KB_ID), eq(USER_ID), anyString(), eq(false), eq(30))).thenReturn(List.of());
+
+            fixture.stream("员工请假怎么申请？");
+
+            verify(fixture.vector).search(eq(KB_ID), anyString(), eq(30));
+            verify(fixture.vector, never()).search(eq(inaccessibleKnowledgeBaseId), anyString(), eq(30));
+            assertThat(fixture.traceRetrieval().path("intentRoutes").get(0).path("knowledgeBaseIds").get(0).asText())
+                    .isEqualTo(KB_ID.toString());
         }
     }
 
@@ -304,6 +471,24 @@ class RagChatServiceTest {
         }
     }
 
+    @Test
+    void recordsRerankFallbackDurationAndErrorInTrace() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            when(fixture.vector.search(eq(KB_ID), anyString(), eq(30))).thenReturn(List.of(
+                    vectorHit("first", "policy evidence one"), vectorHit("second", "policy evidence two")));
+            when(fixture.keyword.search(eq(KB_ID), eq(USER_ID), anyString(), eq(false), eq(30))).thenReturn(List.of());
+            when(fixture.rerank.configured()).thenReturn(true);
+            when(fixture.rerank.rerank(anyString(), any(), eq(6))).thenThrow(new IOException("rerank offline"));
+
+            fixture.stream("policy evidence question");
+
+            JsonNode rerank = findStage(fixture.traceRetrieval().path("stages"), "rerank");
+            assertThat(rerank.path("status").asText()).isEqualTo("FALLBACK");
+            assertThat(rerank.path("error").asText()).contains("IOException: rerank offline");
+            assertThat(rerank.path("durationMs").asLong()).isGreaterThanOrEqualTo(0);
+        }
+    }
+
     private static VectorRetriever.SearchHit vectorHit(String id, String content) {
         return vectorHit(id, content, 0.9);
     }
@@ -314,6 +499,11 @@ class RagChatServiceTest {
 
     private static ElasticsearchChunkIndex.KeywordHit keywordHit(String id, String content) {
         return new ElasticsearchChunkIndex.KeywordHit(id, "doc-" + id, "keyword.txt", content, 1.0);
+    }
+
+    private static JsonNode findStage(JsonNode stages, String name) {
+        for (JsonNode stage : stages) if (name.equals(stage.path("name").asText())) return stage;
+        throw new AssertionError("Trace stage not found: " + name);
     }
 
     private static final class Fixture implements AutoCloseable {
@@ -340,12 +530,15 @@ class RagChatServiceTest {
             when(intents.analyze(anyString())).thenReturn(new IntentClassifier.Decision(
                     new IntentClassifier.Classification("intent-1", "常规咨询", "", "", 0.9, List.of("问题")), List.of(), false));
             when(mcp.invokeForQuestion(anyString())).thenReturn("");
-            when(modelRouter.stream(anyString(), anyString(), any())).thenAnswer(invocation -> {
+            when(modelRouter.stream(anyString(), anyString(), any(), any())).thenAnswer(invocation -> {
                 Consumer<String> onToken = invocation.getArgument(2);
+                Consumer<ChatModelRouter.ModelAttempt> onAttempt = invocation.getArgument(3);
                 onToken.accept("evidence-backed answer");
+                onAttempt.accept(new ChatModelRouter.ModelAttempt("test-model", "test-model", "SUCCESS", 1, null, true));
                 return "test-model";
             });
-            service = new RagChatService(jdbc, vector, keyword, modelRouter, limiter, mapper, executor, mcp, intents, memory, rerank, 0.25, 0.1);
+            service = new RagChatService(jdbc, vector, keyword, modelRouter, limiter, mapper, executor, mcp, intents, memory, rerank,
+                    new QueryTermMappingService(jdbc, mapper), new MultiQuestionRewriteService(modelRouter, mapper), 0.25, 0.1);
         }
 
         void stream() {

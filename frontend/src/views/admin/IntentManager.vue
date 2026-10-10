@@ -31,7 +31,7 @@ async function create() {
 
 async function toggle(item: any) {
   try {
-    await http.put(`/intents/${item.id}`, { name: item.name, description: item.description, keywords: item.keywords, promptHint: item.promptHint, enabled: !item.enabled })
+    await http.put(`/intents/${item.id}`, { name: item.name, description: item.description, keywords: item.keywords, promptHint: item.promptHint, enabled: !item.enabled, parentId: item.parentId || null })
     item.enabled = !item.enabled
   } catch (error) { ElMessage.error(error instanceof Error ? error.message : '更新状态失败') }
 }
@@ -48,7 +48,7 @@ async function saveEdit(item: any) {
     return
   }
   try {
-    await http.put(`/intents/${item.id}`, { name: draft.value.name.trim(), description: draft.value.description.trim(), keywords, promptHint: draft.value.promptHint.trim(), enabled: item.enabled })
+    await http.put(`/intents/${item.id}`, { name: draft.value.name.trim(), description: draft.value.description.trim(), keywords, promptHint: draft.value.promptHint.trim(), enabled: item.enabled, parentId: item.parentId || null })
     editingId.value = ''
     await load()
     ElMessage.success('意图配置已保存')

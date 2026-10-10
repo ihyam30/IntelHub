@@ -22,8 +22,12 @@ http.interceptors.response.use((response) => {
 export type ApiUser = { id: string; username: string; displayName: string; role: 'USER' | 'ADMIN'; token?: string }
 export type KnowledgeBase = { id: string; ownerId: string; name: string; description: string; documents: number; createdAt: string }
 export type DocumentItem = { id: string; filename: string; status: string; chunkCount: number; createdAt: string; error?: string }
-export type Citation = { chunkId: string; documentId: string; filename: string; chunkIndex: number; excerpt: string; score: number }
-export type Pipeline = { id: string; ownerId?: string | null; name: string; nodes: { type: string }[]; isDefault: boolean; createdAt: string; updatedAt: string }
+export type DocumentChunk = { id: string; documentId: string; chunkIndex: number; content: string; pageNumber: number | null; updatedAt: string; manuallyEdited: boolean }
+export type DocumentChunkPage = { items: DocumentChunk[]; page: number; pageSize: number; total: number }
+export type Citation = { chunkId: string; documentId: string; filename: string; chunkIndex: number; excerpt: string; score: number; knowledgeBaseId?: string }
+export type ChunkerSettings = { chunkSize: number; overlapSize: number }
+export type PipelineNode = { type: string; settings?: ChunkerSettings }
+export type Pipeline = { id: string; ownerId?: string | null; name: string; nodes: PipelineNode[]; isDefault: boolean; createdAt: string; updatedAt: string }
 
 export async function request<T>(url: string, config?: Parameters<typeof http.request>[0]): Promise<T> {
   return (await http.request({ url, ...config })) as T

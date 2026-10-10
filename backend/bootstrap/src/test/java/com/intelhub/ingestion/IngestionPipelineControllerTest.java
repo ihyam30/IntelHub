@@ -89,4 +89,18 @@ class IngestionPipelineControllerTest {
                         error -> assertThat(error.getStatusCode().value()).isEqualTo(400));
         verify(jdbc, never()).update(anyString(), any(Object[].class));
     }
+
+    @Test
+    void rejectsPipelineWithOverlapAboveHalfTheChunkSize() {
+        var request = new IngestionPipelineController.PipelineRequest("Excessive overlap", List.of(
+                new IngestionPipelineController.NodeStep("parse"),
+                new IngestionPipelineController.NodeStep("chunk", new ChunkerSettings(512, 511)),
+                new IngestionPipelineController.NodeStep("embedding"),
+                new IngestionPipelineController.NodeStep("index")));
+
+        assertThatThrownBy(() -> controller.create(request))
+                .isInstanceOfSatisfying(ResponseStatusException.class,
+                        error -> assertThat(error.getStatusCode().value()).isEqualTo(400));
+        verify(jdbc, never()).update(anyString(), any(Object[].class));
+    }
 }

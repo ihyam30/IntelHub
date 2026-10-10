@@ -5,11 +5,14 @@ import {
   ElDropdown,
   ElDropdownItem,
   ElDropdownMenu,
+  ElDialog,
+  ElEmpty,
   ElForm,
   ElFormItem,
   ElInput,
   ElInputNumber,
   ElOption,
+  ElPagination,
   ElSelect,
   ElTable,
   ElTableColumn,
@@ -21,6 +24,7 @@ import App from './App.vue'
 import router from './router'
 import './styles.css'
 import './admin-extra.css'
+import './redesign.css'
 
 const app = createApp(App)
 app.use(createPinia()).use(router)
@@ -30,11 +34,14 @@ for (const component of [
   ElDropdown,
   ElDropdownItem,
   ElDropdownMenu,
+  ElDialog,
+  ElEmpty,
   ElForm,
   ElFormItem,
   ElInput,
   ElInputNumber,
   ElOption,
+  ElPagination,
   ElSelect,
   ElTable,
   ElTableColumn,

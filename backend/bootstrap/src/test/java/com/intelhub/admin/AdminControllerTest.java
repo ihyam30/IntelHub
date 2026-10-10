@@ -11,14 +11,22 @@ import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.UUID;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.startsWith;
+import static org.mockito.Mockito.never;
+import org.mockito.ArgumentCaptor;
+import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -34,8 +42,9 @@ class AdminControllerTest {
     private final StringRedisTemplate redis = mock(StringRedisTemplate.class);
     private final McpToolClient mcpToolClient = mock(McpToolClient.class);
     private final RerankService rerankService = mock(RerankService.class);
+    private final AdminMutationGuard adminMutationGuard = new AdminMutationGuard(jdbc);
     private final AdminController controller = new AdminController(jdbc, currentUser, modelRouter, embeddingService,
-            limiter, redis, mcpToolClient, rerankService);
+            limiter, redis, mcpToolClient, rerankService, adminMutationGuard);
 
     @Test
     void dashboardReturnsServiceAndTraceCounts() {
@@ -85,6 +94,82 @@ class AdminControllerTest {
 
         assertThatThrownBy(() -> controller.setUserEnabled(currentId, new AdminController.EnabledRequest(false)))
                 .isInstanceOf(ResponseStatusException.class);
-        verifyNoInteractions(jdbc);
+        verify(jdbc).execute(contains("pg_advisory_xact_lock"));
+        verify(jdbc, never()).query(anyString(), any(RowMapper.class), any(Object[].class));
+        verify(jdbc, never()).update(anyString(), any(Object[].class));
+    }
+
+    @Test
+    void rechecksOperatorPrivilegeAfterWaitingForTheMutationLock() {
+        UUID targetId = UUID.randomUUID();
+        doNothing()
+                .doThrow(new ResponseStatusException(org.springframework.http.HttpStatus.FORBIDDEN, "管理员权限已撤销"))
+                .when(currentUser).requireAdmin();
+
+        assertThatThrownBy(() -> controller.updateUser(targetId, new AdminController.UpdateUserRequest("User", "USER")))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("管理员权限已撤销");
+        verify(jdbc).execute(contains("pg_advisory_xact_lock"));
+        verify(jdbc, never()).query(anyString(), any(RowMapper.class), any(Object[].class));
+        verify(jdbc, never()).update(anyString(), any(Object[].class));
+    }
+
+    @Test
+    void createsUserWithBcryptPasswordHash() {
+        when(jdbc.queryForObject(contains("lower(username)"), eq(Integer.class), eq("new.user"))).thenReturn(0);
+        var created = controller.createUser(new AdminController.CreateUserRequest("new.user", "long-password-123", "New User", "USER")).data();
+        ArgumentCaptor<Object[]> arguments = ArgumentCaptor.forClass(Object[].class);
+        verify(jdbc).update(contains("INSERT INTO app_user"), arguments.capture());
+
+        assertThat(created.username()).isEqualTo("new.user");
+        assertThat(created.role()).isEqualTo("USER");
+        assertThat((String) arguments.getValue()[2]).startsWith("$2a$").isNotEqualTo("long-password-123");
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void preventsDemotingTheLastEnabledAdministrator() {
+        UUID adminId = UUID.randomUUID();
+        when(jdbc.query(contains("SELECT role,enabled FROM app_user"), any(RowMapper.class), eq(adminId)))
+                .thenReturn(List.of(new AdminController.UserStatus("ADMIN", true)));
+        when(currentUser.id()).thenReturn(UUID.randomUUID());
+        when(jdbc.queryForObject(contains("count(*) FROM app_user WHERE role='ADMIN'"), eq(Integer.class))).thenReturn(1);
+
+        assertThatThrownBy(() -> controller.updateUser(adminId, new AdminController.UpdateUserRequest("Admin", "USER")))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("至少需要保留一名");
+        verify(jdbc).execute(contains("pg_advisory_xact_lock"));
+        verify(jdbc, never()).update(anyString(), any(Object[].class));
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void preventsDeletingTheLastEnabledAdministrator() {
+        UUID adminId = UUID.randomUUID();
+        when(currentUser.id()).thenReturn(UUID.randomUUID());
+        when(jdbc.query(contains("SELECT role,enabled FROM app_user"), any(RowMapper.class), eq(adminId)))
+                .thenReturn(List.of(new AdminController.UserStatus("ADMIN", true)));
+        when(jdbc.queryForObject(contains("count(*) FROM app_user WHERE role='ADMIN'"), eq(Integer.class))).thenReturn(1);
+
+        assertThatThrownBy(() -> controller.deleteUser(adminId))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("最后一名启用的管理员");
+        verify(jdbc).execute(contains("pg_advisory_xact_lock"));
+        verify(jdbc, never()).update(anyString(), any(Object[].class));
+    }
+
+    @Test
+    void preventsDisablingTheLastEnabledAdministrator() {
+        UUID adminId = UUID.randomUUID();
+        when(currentUser.id()).thenReturn(UUID.randomUUID());
+        when(jdbc.query(contains("SELECT role,enabled FROM app_user"), any(RowMapper.class), eq(adminId)))
+                .thenReturn(List.of(new AdminController.UserStatus("ADMIN", true)));
+        when(jdbc.queryForObject(contains("count(*) FROM app_user WHERE role='ADMIN'"), eq(Integer.class))).thenReturn(1);
+
+        assertThatThrownBy(() -> controller.setUserEnabled(adminId, new AdminController.EnabledRequest(false)))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("不能停用最后一名启用的管理员");
+        verify(jdbc).execute(contains("pg_advisory_xact_lock"));
+        verify(jdbc, never()).update(anyString(), any(Object[].class));
     }
 }

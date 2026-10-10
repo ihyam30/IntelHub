@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { ElMessage } from 'element-plus'
 import { request } from '../../api'
 
 const models = ref<any[]>([])
@@ -28,6 +29,7 @@ onMounted(async () => {
     rerank.value = rerankStatus
     embedding.value = embeddingStatus
   }
+  catch (error) { ElMessage.error(error instanceof Error ? error.message : '模型状态加载失败') }
   finally { loading.value = false }
 })
 </script>

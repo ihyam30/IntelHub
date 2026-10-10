@@ -35,8 +35,12 @@ public class ConversationController {
         if (jdbc.queryForObject("SELECT count(*) FROM conversation WHERE id=? AND owner_id=?", Integer.class, id, owner) == 0) {
             throw new ResponseStatusException(org.springframework.http.HttpStatus.NOT_FOUND, "会话不存在");
         }
-        return ApiResult.ok(jdbc.query("SELECT id,role,content,citations,model_id,created_at FROM conversation_message WHERE conversation_id=? ORDER BY created_at",
-                (rs, n) -> new MessageView(rs.getObject("id", UUID.class).toString(), rs.getString("role"), rs.getString("content"), rs.getString("citations"), rs.getString("model_id"), rs.getObject("created_at", OffsetDateTime.class)), id));
+        return ApiResult.ok(jdbc.query("SELECT m.id,m.role,m.content,m.citations,m.model_id,m.created_at,f.vote::INTEGER AS feedback_vote " +
+                        "FROM conversation_message m LEFT JOIN message_feedback f ON f.message_id=m.id AND f.user_id=? " +
+                        "WHERE m.conversation_id=? ORDER BY m.created_at,m.id",
+                (rs, n) -> new MessageView(rs.getObject("id", UUID.class).toString(), rs.getString("role"), rs.getString("content"),
+                        rs.getString("citations"), rs.getString("model_id"), rs.getObject("created_at", OffsetDateTime.class),
+                        rs.getObject("feedback_vote", Integer.class)), owner, id));
     }
 
     @DeleteMapping("/{id}")
@@ -47,5 +51,5 @@ public class ConversationController {
     }
 
     public record ConversationView(String id, String knowledgeBaseId, String title, String summary, OffsetDateTime createdAt, OffsetDateTime updatedAt) {}
-    public record MessageView(String id, String role, String content, String citations, String modelId, OffsetDateTime createdAt) {}
+    public record MessageView(String id, String role, String content, String citations, String modelId, OffsetDateTime createdAt, Integer feedback) {}
 }

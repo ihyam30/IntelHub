@@ -42,14 +42,27 @@ public class ChatModelRouter {
     }
 
     public String stream(String systemPrompt, String userPrompt, Consumer<String> onToken) throws Exception {
+        return stream(systemPrompt, userPrompt, onToken, ignored -> {});
+    }
+
+    /** Streams a response and reports every provider attempt for request-level tracing. */
+    public String stream(String systemPrompt, String userPrompt, Consumer<String> onToken,
+                         Consumer<ModelAttempt> onAttempt) throws Exception {
         if (clients.isEmpty()) {
+            long started = System.nanoTime();
             String answer = localFallback(userPrompt, false);
             for (int i = 0; i < answer.length(); i += 12) onToken.accept(answer.substring(i, Math.min(i + 12, answer.length())));
+            onAttempt.accept(new ModelAttempt("local-demo", "local-demo", "LOCAL_DEMO", elapsedMs(started), null, true));
             return "local-demo";
         }
 
         for (ChatModelClient client : clients) {
-            if (!allowRequest(client.id())) continue;
+            if (!allowRequest(client.id())) {
+                onAttempt.accept(new ModelAttempt(client.id(), client.model(), "SKIPPED_CIRCUIT",
+                        0, "熔断器打开或半开探测已被占用", false));
+                continue;
+            }
+            long attemptStarted = System.nanoTime();
             boolean[] emitted = {false};
             try {
                 client.stream(systemPrompt, userPrompt, token -> {
@@ -57,15 +70,28 @@ public class ChatModelRouter {
                     onToken.accept(token);
                 });
                 recordSuccess(client.id());
+                onAttempt.accept(new ModelAttempt(client.id(), client.model(), "SUCCESS", elapsedMs(attemptStarted), null, emitted[0]));
                 return client.id();
             } catch (Exception ex) {
                 recordFailure(client.id());
+                onAttempt.accept(new ModelAttempt(client.id(), client.model(), "FAILED", elapsedMs(attemptStarted), safeError(ex), emitted[0]));
                 if (emitted[0]) throw ex;
             }
         }
+        long fallbackStarted = System.nanoTime();
         String fallback = localFallback(userPrompt, true);
         for (int i = 0; i < fallback.length(); i += 12) onToken.accept(fallback.substring(i, Math.min(i + 12, fallback.length())));
+        onAttempt.accept(new ModelAttempt("local-demo-fallback", "local-demo-fallback", "LOCAL_FALLBACK",
+                elapsedMs(fallbackStarted), null, true));
         return "local-demo-fallback";
+    }
+
+    /** Runs a short, non-streaming task through the same provider order and circuit-breaker policy. */
+    public String complete(String systemPrompt, String userPrompt) throws Exception {
+        if (clients.isEmpty()) return "";
+        StringBuilder result = new StringBuilder();
+        String selected = stream(systemPrompt, userPrompt, result::append);
+        return selected.startsWith("local-demo") ? "" : result.toString();
     }
 
     public List<Map<String, Object>> health() {
@@ -129,4 +155,17 @@ public class ChatModelRouter {
     private static long parseLong(String value) {
         try { return Long.parseLong(value); } catch (NumberFormatException ignored) { return 0; }
     }
+
+    private static long elapsedMs(long startedNanos) {
+        return Math.max(0, (System.nanoTime() - startedNanos) / 1_000_000);
+    }
+
+    private static String safeError(Exception exception) {
+        String message = exception.getMessage();
+        String result = exception.getClass().getSimpleName() + (message == null || message.isBlank() ? "" : ": " + message);
+        return result.length() <= 500 ? result : result.substring(0, 500);
+    }
+
+    public record ModelAttempt(String providerId, String model, String status, long durationMs,
+                               String error, boolean emittedToken) {}
 }

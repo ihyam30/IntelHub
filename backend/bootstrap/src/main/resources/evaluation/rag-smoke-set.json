@@ -1,0 +1,47 @@
+{
+  "version": "1.0",
+  "cases": [
+    {
+      "id": "leave-application-steps",
+      "title": "年假申请步骤",
+      "question": "员工年假申请需要经过哪些审批步骤？",
+      "expectedSourceContains": "employee-leave-policy",
+      "expectedEvidence": ["直属负责人审批", "人事服务岗核对年假余额"]
+    },
+    {
+      "id": "leave-emergency-submission",
+      "title": "紧急年假补交",
+      "question": "无法提前提交年假申请时要怎么补交？",
+      "expectedSourceContains": "employee-leave-policy",
+      "expectedEvidence": ["下一个工作日内补交门户申请", "尽快告知直属负责人"]
+    },
+    {
+      "id": "security-incident-reporting",
+      "title": "疑似数据泄露上报时限",
+      "question": "发现疑似数据泄露后要在多久内上报？",
+      "expectedSourceContains": "fictional-information-security-policy",
+      "expectedEvidence": ["15分钟内", "安全工单队列"]
+    },
+    {
+      "id": "security-incident-ticket-fields",
+      "title": "安全事件工单记录项",
+      "question": "数据安全事件工单需要记录哪些信息？",
+      "expectedSourceContains": "fictional-information-security-policy",
+      "expectedEvidence": ["发生时间", "涉及系统", "资料级别", "已观察到的影响", "已采取的措施"]
+    },
+    {
+      "id": "ticket-root-cause",
+      "title": "VX-700 工单根因",
+      "question": "工单 TKT-2026-0418 的根因是什么？",
+      "expectedSourceContains": "fictional-ticket-TKT-2026-0418",
+      "expectedEvidence": ["同步发送", "result-publish-queue"]
+    },
+    {
+      "id": "ticket-escalation",
+      "title": "工单升级为 P1 的条件",
+      "question": "哪些情况需要将该工单升级为 P1？",
+      "expectedSourceContains": "fictional-ticket-TKT-2026-0418",
+      "expectedEvidence": ["连续10分钟超过400条", "高于1秒"]
+    }
+  ]
+}

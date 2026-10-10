@@ -51,16 +51,23 @@ class ChatModelRouterTest {
         fixture.primaryHandler.set(exchange -> fixture.respond(exchange, 200, sse("primary")));
         fixture.fallbackHandler.set(exchange -> fixture.respond(exchange, 200, sse("fallback")));
         List<String> tokens = new ArrayList<>();
+        List<ChatModelRouter.ModelAttempt> attempts = new ArrayList<>();
 
-        assertThat(fixture.router(3, 30_000).stream("system", "question", tokens::add)).isEqualTo("primary");
+        assertThat(fixture.router(3, 30_000).stream("system", "question", tokens::add, attempts::add)).isEqualTo("primary");
         assertThat(tokens).containsExactly("primary");
+        assertThat(attempts).extracting(ChatModelRouter.ModelAttempt::providerId).containsExactly("primary");
+        assertThat(attempts.get(0).status()).isEqualTo("SUCCESS");
         assertThat(fixture.primaryCalls.get()).isEqualTo(1);
         assertThat(fixture.fallbackCalls.get()).isZero();
 
         fixture.primaryHandler.set(exchange -> fixture.respond(exchange, 503, "unavailable"));
         tokens.clear();
-        assertThat(fixture.router.stream("system", "question", tokens::add)).isEqualTo("fallback");
+        attempts.clear();
+        assertThat(fixture.router.stream("system", "question", tokens::add, attempts::add)).isEqualTo("fallback");
         assertThat(tokens).containsExactly("fallback");
+        assertThat(attempts).extracting(ChatModelRouter.ModelAttempt::providerId).containsExactly("primary", "fallback");
+        assertThat(attempts).extracting(ChatModelRouter.ModelAttempt::status).containsExactly("FAILED", "SUCCESS");
+        assertThat(attempts.get(0).error()).isNotBlank();
         assertThat(fixture.primaryCalls.get()).isEqualTo(2);
         assertThat(fixture.fallbackCalls.get()).isEqualTo(1);
 

@@ -105,6 +105,7 @@ npm run dev
 - 可配置 Pipeline 节点顺序、RocketMQ 异步执行、幂等锁、节点日志和失败重试入口。
 - pgvector 与 Elasticsearch 并行检索，RRF 融合、去重、引用来源；无证据时返回保守提示。
 - POST SSE 问答、会话历史、简化问题改写和意图识别、MCP 演示工具、Trace 查询。
+- 助手回答有帮助/没帮助反馈；管理员可运行固定的检索评测集并查看 Hit@1、Recall@6、MRR 和证据词覆盖率。
 - 主/候选模型路由、Redis 共享熔断状态、半开探测；Redis ZSET FIFO 排队、租期许可、每用户请求限额。
 - 管理面板：用户、模型健康、意图、MCP 工具、运行概览、Trace 和并发许可设置。
 - Compose 运行两个后端实例，便于本地观察 Redis 共享状态和公平队列。
@@ -115,11 +116,13 @@ npm run dev
 - `/api/knowledge-bases`、`/api/documents`、`/api/ingestion-pipelines`
 - `POST /api/chat/stream`（SSE）和 `/api/conversations`
 - `/api/admin/users`、`/api/admin/models`、`/api/admin/settings`、`/api/admin/traces`、`/api/admin/intents`
+- `POST /api/conversations/messages/{messageId}/feedback`、`GET /api/admin/evaluation/cases`、`POST /api/admin/evaluation/run`
 
 ## 演示交付物
 
 - [系统架构图](docs/architecture.md)：Compose 部署拓扑、文档入库和问答时序。
 - [本地演示与配置指南](docs/demo-guide.md)：环境变量、启动、排障和逐项验收说明。
+- [问答反馈与离线评测](docs/rag-feedback-evaluation.md)：反馈接口、安全范围、评测指标和运行方式。
 - [演示示例文档](demo-data/employee-leave-policy.md)：可直接上传的虚构 Markdown 资料。
 - [端到端演示脚本](scripts/demo.ps1)：注册或登录、创建知识库、上传、等待入库、POST SSE 问答并读取 Trace。
 

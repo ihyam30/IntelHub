@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { http } from '../api'
+import { useRoute, useRouter } from 'vue-router'
 import ModelManager from './admin/ModelManager.vue'
 import IntentManager from './admin/IntentManager.vue'
 
 type Tab = 'overview' | 'users' | 'models' | 'intents' | 'traces' | 'settings'
 const tab = ref<Tab>('overview')
+const route = useRoute()
+const router = useRouter()
 const modelRefresh = ref(0)
 const dashboard = ref({ users: 0, knowledgeBases: 0, documents: 0, conversations: 0, traces24h: 0, failedDocuments: 0 })
 const users = ref<any[]>([])
@@ -23,7 +26,11 @@ const tabs: { key: Tab; label: string; icon: string }[] = [
 ]
 const title = computed(() => tabs.find(item => item.key === tab.value)?.label || '管理中心')
 
-onMounted(() => { void loadTab() })
+watch(() => route.query.tab, (value) => {
+  const next = typeof value === 'string' && tabs.some(item => item.key === value) ? value as Tab : 'overview'
+  tab.value = next
+  void loadTab()
+}, { immediate: true })
 
 async function loadTab() {
   if (tab.value === 'overview') dashboard.value = await http.get('/admin/dashboard') as typeof dashboard.value
@@ -34,7 +41,9 @@ async function loadTab() {
   if (tab.value === 'settings') settings.value = await http.get('/admin/settings') as typeof settings.value
 }
 
-async function choose(next: Tab) { tab.value = next; await loadTab() }
+async function choose(next: Tab) {
+  await router.replace({ query: { ...route.query, tab: next } })
+}
 async function refreshTab() { await loadTab(); modelRefresh.value++ }
 
 async function toggleUser(user: any) {
@@ -69,7 +78,7 @@ async function createIntent() {
 
 async function toggleIntent(intent: any) {
   try {
-    await http.put(`/intents/${intent.id}`, { name: intent.name, description: intent.description, keywords: intent.keywords, promptHint: intent.promptHint, enabled: !intent.enabled })
+    await http.put(`/intents/${intent.id}`, { name: intent.name, description: intent.description, keywords: intent.keywords, promptHint: intent.promptHint, enabled: !intent.enabled, parentId: intent.parentId || null })
     intent.enabled = !intent.enabled
   } catch (error) { ElMessage.error(error instanceof Error ? error.message : '更新失败') }
 }

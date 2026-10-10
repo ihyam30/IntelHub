@@ -1,0 +1,3 @@
+ALTER TABLE document_chunk
+    ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    ADD COLUMN manually_edited BOOLEAN NOT NULL DEFAULT FALSE;

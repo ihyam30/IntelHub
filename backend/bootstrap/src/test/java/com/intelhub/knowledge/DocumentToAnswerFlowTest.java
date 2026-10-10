@@ -18,6 +18,8 @@ import com.intelhub.mcp.McpToolClient;
 import com.intelhub.rag.ConversationMemory;
 import com.intelhub.rag.FairQueueLimiter;
 import com.intelhub.rag.IntentClassifier;
+import com.intelhub.rag.MultiQuestionRewriteService;
+import com.intelhub.rag.QueryTermMappingService;
 import com.intelhub.rag.RagChatController;
 import com.intelhub.rag.RagChatService;
 import com.intelhub.rag.VectorRetriever;
@@ -139,12 +141,15 @@ class DocumentToAnswerFlowTest {
             when(mcp.invokeForQuestion(anyString())).thenReturn("");
             doAnswer(invocation -> {
                 Consumer<String> onToken = invocation.getArgument(2);
+                Consumer<ChatModelRouter.ModelAttempt> onAttempt = invocation.getArgument(3);
                 onToken.accept("制度资料说明：每位员工每年享有十五天年假。");
+                onAttempt.accept(new ChatModelRouter.ModelAttempt("integration-model", "integration-model", "SUCCESS", 1, null, true));
                 return "integration-model";
-            }).when(modelRouter).stream(anyString(), anyString(), any());
+            }).when(modelRouter).stream(anyString(), anyString(), any(), any());
 
             RagChatService chatService = new RagChatService(jdbc, vectorRetriever, keywordIndex, modelRouter, limiter,
-                    mapper, searchExecutor, mcp, intents, memory, reranker, 0.25, 0.1);
+                    mapper, searchExecutor, mcp, intents, memory, reranker,
+                    new QueryTermMappingService(jdbc, mapper), new MultiQuestionRewriteService(modelRouter, mapper), 0.25, 0.1);
             chatService.stream(OWNER_ID, false,
                     new RagChatController.ChatRequest(KNOWLEDGE_BASE_ID, null, "制度里每年有多少天年假？"),
                     new SseEmitter(30_000L), new AtomicBoolean());
@@ -163,6 +168,8 @@ class DocumentToAnswerFlowTest {
             assertThat(retrieval.path("vectorHits").asInt()).isEqualTo(1);
             assertThat(retrieval.path("keywordHits").asInt()).isEqualTo(1);
             assertThat(retrieval.path("citations").asInt()).isEqualTo(1);
+            assertThat(retrieval.path("stages").findValuesAsText("name")).contains("query_rewrite", "intent_classification",
+                    "intent_routing", "vector_retrieval", "keyword_retrieval", "rrf_fusion", "rerank", "model_routing");
             assertThat(trace.getValue()[6]).isEqualTo("COMPLETED");
             verify(lease).close();
         } finally {

@@ -17,6 +17,8 @@ import java.util.Map;
 import java.util.function.Consumer;
 
 public final class OpenAiCompatibleChatModelClient implements ChatModelClient {
+    private static final int MAX_ERROR_BODY_BYTES = 4096;
+
     private final String id;
     private final String baseUrl;
     private final String apiKey;
@@ -65,7 +67,11 @@ public final class OpenAiCompatibleChatModelClient implements ChatModelClient {
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             String detail;
             try (var input = response.body()) {
-                detail = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+                byte[] errorBody = input.readNBytes(MAX_ERROR_BODY_BYTES + 1);
+                boolean truncated = errorBody.length > MAX_ERROR_BODY_BYTES;
+                detail = new String(errorBody, 0, Math.min(errorBody.length, MAX_ERROR_BODY_BYTES), StandardCharsets.UTF_8);
+                detail = sanitizeErrorDetail(detail);
+                if (truncated) detail += "…";
             }
             throw new IllegalStateException("Model " + id + " returned HTTP " + response.statusCode() + ": " + detail);
         }
@@ -86,6 +92,12 @@ public final class OpenAiCompatibleChatModelClient implements ChatModelClient {
             }
         }
         if (!completed) throw new IOException("Model " + id + " closed its stream before [DONE]");
+    }
+
+    private String sanitizeErrorDetail(String detail) {
+        String sanitized = detail == null ? "" : detail;
+        if (apiKey != null && !apiKey.isBlank()) sanitized = sanitized.replace(apiKey, "[REDACTED]");
+        return sanitized.replaceAll("(?i)(Bearer\\s+)[A-Za-z0-9._~+/=-]+", "$1[REDACTED]");
     }
 
     private static String stripTrailingSlash(String value) {
